@@ -178,7 +178,7 @@ def decide(deploy, cwd):
     if network == "test":
         if findings:
             PENDING_WARNINGS[deploy["command"]] = (
-                f"⚠️ [Talos] Deployed to {label} with {len(findings)} open finding(s). "
+                f"⚠ [Talos] Deployed to {label} with {len(findings)} open finding(s). "
                 f"These would BLOCK a mainnet deploy.\n{report}")
         return None
 
