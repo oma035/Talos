@@ -9,3 +9,5 @@ provides_hooks:
   - transform_tool_result
   - pre_llm_call
   - pre_tool_call
+capabilities:
+  - tools.override

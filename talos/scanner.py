@@ -31,14 +31,19 @@ def scan_path(path):
         return scan_file(path)
     findings = []
     sol_done = False
+    framework = any(_find_up(path, m) or os.path.exists(os.path.join(path, m))
+                    for m in ("foundry.toml", "hardhat.config.js", "hardhat.config.ts"))
     for root, dirs, files in os.walk(path):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for name in files:
             full = os.path.join(root, name)
             if name.endswith(".sol"):
-                if not sol_done:
-                    findings += scan_solidity(path)  # Slither scans the whole project once
-                    sol_done = True
+                if framework:
+                    if not sol_done:
+                        findings += scan_solidity(path)  # Foundry/Hardhat: Slither scans the project once
+                        sol_done = True
+                else:
+                    findings += scan_solidity(full)  # loose files: Slither needs one file at a time
             elif name.endswith(".rs"):
                 findings += scan_anchor_file(full)
             elif name.endswith(".move"):
