@@ -89,11 +89,8 @@ def find_project(start):
 
 
 def _approve_supported():
-    try:
-        import hermes_cli.plugins as p
-        return hasattr(p, "resolve_pre_tool_block")
-    except Exception:
-        return False
+    # Approval escalation ships in Hermes >=0.18.1, enforced via requires_hermes in plugin.yaml.
+    return True
 
 
 def decide(deploy, cwd):
