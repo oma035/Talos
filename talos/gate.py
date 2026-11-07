@@ -184,9 +184,9 @@ def decide(deploy, cwd):
 
     if worst in ("critical", "high"):
         return {"action": "block", "message":
-                f"🛡️ [Talos] Mainnet deploy BLOCKED ({label}). Fix these first, then retry:\n{report}"}
+                f"🛡 [Talos] Mainnet deploy BLOCKED ({label}). Fix these first, then retry:\n{report}"}
     if worst == "medium":
-        msg = (f"🛡️ [Talos] Mainnet deploy ({label}) has medium-severity findings. "
+        msg = (f"🛡 [Talos] Mainnet deploy ({label}) has medium-severity findings. "
                f"Approve only if you accept the risk:\n{report}")
         if _approve_supported():
             return {"action": "approve", "rule_key": _rule_key(project, findings), "message": msg}

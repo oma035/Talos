@@ -114,7 +114,7 @@ def on_pre_tool(**kwargs):
             result["message"] += f"\n(Deploy found inside {deploy['via']}.)"
         return result
     except Exception as exc:
-        return {"action": "block", "message": f"🛡️ [Talos] Gate error, deploy blocked to be safe: {exc}"}
+        return {"action": "block", "message": f"🛡 [Talos] Gate error, deploy blocked to be safe: {exc}"}
 
 
 # ------------------------------------------------------------ tool + command

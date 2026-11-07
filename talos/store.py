@@ -99,7 +99,7 @@ def format_report(path, findings):
         counts[f.get("severity", "info")] = counts.get(f.get("severity", "info"), 0) + 1
     summary = ", ".join(f"{n} {sev}" for sev, n in sorted(counts.items(), key=lambda kv: -SEVERITY_ORDER.get(kv[0], 0))) or "none"
     return (
-        f"🛡️ Talos audit report for {path}\n"
+        f"🛡 Talos audit report for {path}\n"
         f"Summary: {summary}\n\n"
         f"{format_findings(findings, header='Findings')}"
     )
