@@ -81,7 +81,7 @@ def on_tool_result(**kwargs):
         store.set_findings(path, findings)
         note = store.format_findings(findings, header=f"[Talos] Security scan of {os.path.basename(path)}")
         if findings:
-            note += "\nFix the high/critical issues above before deploying. Talos will block mainnet deploys until they're resolved."
+            note += "\n(Talos policy: mainnet deploys are blocked while high/critical findings are open; medium findings need user approval.)"
         return f"{result}\n\n{note}"
     except Exception as exc:
         return f"{kwargs.get('result', '')}\n\n[Talos] scan error: {exc}"
