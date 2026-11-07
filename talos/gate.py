@@ -23,7 +23,74 @@ def _flag(command, *names):
     return None
 
 
-def detect_deploy(command):
+SCRIPT_EXTS = (".sh", ".bash", ".zsh", ".py", ".js", ".mjs", ".cjs", ".ts")
+PKG_RUN = re.compile(r"\b(?:npm|pnpm|yarn|bun)\s+(?:run(?:-script)?\s+)?([\w:.-]+)")
+MAX_SCRIPT_BYTES = 200_000
+
+
+def detect_deploy(command, cwd=None, _depth=0):
+    """Direct deploy commands, plus deploys hidden inside scripts the command runs."""
+    import os
+    c = " ".join((command or "").split())
+    hit = _detect_direct(c)
+    if hit or _depth >= 3:
+        return hit
+    cwd = cwd or os.getcwd()
+    for body, via in _referenced_scripts(c, cwd):
+        body = body.replace("\\\n", " ")
+        for line in body.splitlines():
+            line = re.sub(r"[\"'`,\[\]()]", " ", line)
+            inner = detect_deploy(line, cwd, _depth + 1)
+            if inner:
+                return {**inner, "command": c, "via": via}
+    return None
+
+
+def _read_text(path):
+    try:
+        with open(path, "rb") as f:
+            data = f.read(MAX_SCRIPT_BYTES)
+        return data.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+
+def _referenced_scripts(c, cwd):
+    import json, os
+    out = []
+    for tok in re.split(r"[\s;&|()<>]+", c):
+        tok = tok.strip("'\"")
+        if not tok or tok.startswith("-"):
+            continue
+        p = os.path.expanduser(tok)
+        p = p if os.path.isabs(p) else os.path.join(cwd, p)
+        if not os.path.isfile(p):
+            continue
+        body = _read_text(p)
+        if body is None:
+            continue
+        if p.endswith(SCRIPT_EXTS) or body.startswith("#!"):
+            out.append((body, os.path.relpath(p, cwd)))
+    names = [m.group(1) for m in PKG_RUN.finditer(c)]
+    if names:
+        pkg = scanner._find_up(cwd, "package.json")
+        if pkg:
+            try:
+                scripts = json.loads(_read_text(os.path.join(pkg, "package.json")) or "{}").get("scripts", {})
+            except Exception:
+                scripts = {}
+            for n in names:
+                if n in scripts:
+                    out.append((scripts[n], f"package.json:{n}"))
+    if re.search(r"\b(make|just)\b", c):
+        for mf in ("Makefile", "makefile", "GNUmakefile", "justfile", "Justfile"):
+            body = _read_text(os.path.join(cwd, mf))
+            if body:
+                out.append((body, mf))
+    return out
+
+
+def _detect_direct(command):
     c = " ".join((command or "").split())
     if re.search(r"\banchor\s+(deploy|upgrade)\b", c) or re.search(r"\bsolana\s+program\s+(deploy|upgrade)\b", c):
         return {"chain": "solana", "command": c,

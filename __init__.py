@@ -86,10 +86,14 @@ def on_pre_tool(**kwargs):
         if kwargs.get("tool_name") not in TERMINAL_TOOLS:
             return None
         args = kwargs.get("args") or {}
-        deploy = gate.detect_deploy(_command_from_args(args))
+        cwd = _cwd_from_args(args)
+        deploy = gate.detect_deploy(_command_from_args(args), cwd)
         if not deploy:
             return None
-        return gate.decide(deploy, _cwd_from_args(args))
+        result = gate.decide(deploy, cwd)
+        if result and deploy.get("via") and result.get("message"):
+            result["message"] += f"\n(Deploy found inside {deploy['via']}.)"
+        return result
     except Exception as exc:
         return {"action": "block", "message": f"🛡️ [Talos] Gate error, deploy blocked to be safe: {exc}"}
 
