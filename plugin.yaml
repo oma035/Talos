@@ -1,0 +1,10 @@
+name: talos
+version: "0.1.0"
+description: "Automatic, unskippable smart-contract security checks for code Hermes writes and deploys (EVM, Solana/Anchor, Sui/Move)."
+author: oma035
+provides_tools:
+  - talos_scan
+provides_hooks:
+  - transform_tool_result
+  - pre_llm_call
+  - pre_tool_call
