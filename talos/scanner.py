@@ -157,8 +157,12 @@ def scan_anchor_file(path):
                             "Unchecked arithmetic on a balance-like value. Use checked_add / checked_sub / checked_mul.",
                             "talos-anchor"))
     for m in re.finditer(r"\binvoke(_signed)?\s*\(", text):
-        window = text[max(0, m.start() - 600):m.start()]
-        if not re.search(r"(program_id|\.key\(\)\s*==|require_keys_eq!|check_id)", window):
+        window = text[max(0, m.start() - 600):m.start() + 300]
+        # Instructions from native builders hardcode the program ID, so the CPI target can't be swapped.
+        if re.search(r"(system_instruction::|spl_token(_2022)?::instruction::|spl_associated_token_account::instruction::|system_program::ID)", window):
+            continue
+        # Only an actual comparison counts as a check; merely naming program_id does not.
+        if not re.search(r"(program_id\s*[!=]=|[!=]=\s*[\w:.&*()]*program_id|\bkey\(?\)?\s*[!=]=|require_keys_eq!|check_id\s*\()", window[:600]):
             out.append(_finding(path, _line_of(text, m.start()), "high", "unchecked-cpi",
                                 "Cross-program invoke without an obvious program ID check before it.",
                                 "talos-anchor"))
