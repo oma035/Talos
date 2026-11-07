@@ -104,6 +104,10 @@ def scan_solidity(target):
         proc = subprocess.run([slither, project, "--json", "-"], env=_tool_env(slither), capture_output=True,
                               text=True, timeout=TIMEOUT, cwd=project if os.path.isdir(project) else None)
         data = json.loads(proc.stdout or "{}")
+        if not data.get("success") or "results" not in data:
+            err = (data.get("error") or proc.stderr or "no output").strip()
+            return [_finding(target, None, "high", "scanner-error",
+                             "Slither could not analyze this code, so it is UNCHECKED: " + err[-300:], "slither")]
     except subprocess.TimeoutExpired:
         return [_finding(target, None, "high", "scanner-timeout", "Slither timed out", "slither")]
     except Exception as exc:
