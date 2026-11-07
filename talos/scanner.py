@@ -75,15 +75,33 @@ SLITHER_SEVERITY = {"High": "high", "Medium": "medium", "Low": "low",
                     "Informational": "info", "Optimization": "info"}
 
 
+def _slither_bin():
+    """Find slither on PATH, or next to the Python running Hermes (its venv bin)."""
+    import os, sys
+    found = shutil.which("slither")
+    if found:
+        return found
+    cand = os.path.join(os.path.dirname(sys.executable), "slither")
+    return cand if os.path.isfile(cand) else None
+
+
+def _tool_env(binpath):
+    import os
+    env = dict(os.environ)
+    env["PATH"] = os.path.dirname(binpath) + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def scan_solidity(target):
-    if not shutil.which("slither"):
+    slither = _slither_bin()
+    if not slither:
         return [_finding(target, None, "high", "scanner-missing",
                          "Slither is not installed, so Solidity code is unchecked. Run: pip install slither-analyzer",
                          "talos")]
     project = _find_up(target, "foundry.toml") or _find_up(target, "hardhat.config.js") \
         or _find_up(target, "hardhat.config.ts") or target
     try:
-        proc = subprocess.run(["slither", project, "--json", "-"], capture_output=True,
+        proc = subprocess.run([slither, project, "--json", "-"], env=_tool_env(slither), capture_output=True,
                               text=True, timeout=TIMEOUT, cwd=project if os.path.isdir(project) else None)
         data = json.loads(proc.stdout or "{}")
     except subprocess.TimeoutExpired:
