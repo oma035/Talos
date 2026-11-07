@@ -160,6 +160,13 @@ def _approve_supported():
     return True
 
 
+def _rule_key(project, findings):
+    """Approval grain: one project + its exact open findings. New findings need a new approval."""
+    import hashlib
+    sig = "|".join(sorted(f"{f.get('rule')}:{f.get('file')}" for f in findings))
+    return "talos:" + hashlib.sha256(f"{project}|{sig}".encode()).hexdigest()[:16]
+
+
 def decide(deploy, cwd):
     project = find_project(cwd)
     findings = scanner.scan_path(project)          # always rescan at the gate
@@ -182,6 +189,6 @@ def decide(deploy, cwd):
         msg = (f"🛡️ [Talos] Mainnet deploy ({label}) has medium-severity findings. "
                f"Approve only if you accept the risk:\n{report}")
         if _approve_supported():
-            return {"action": "approve", "message": msg}
+            return {"action": "approve", "rule_key": _rule_key(project, findings), "message": msg}
         return {"action": "block", "message": msg + "\n(This Hermes version can't ask for approval, so Talos blocked it.)"}
     return None
