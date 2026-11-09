@@ -1,12 +1,67 @@
 """Talos scanners: Slither (EVM), built-in Anchor rule pack, Sui Move lint + rules."""
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
+import time
+
+from . import store
 
 SKIP_DIRS = {".git", "node_modules", "target", "out", "cache", "lib", "build", ".anchor"}
 TIMEOUT = 180
+SCANNER_VERSION = "2"          # bump to invalidate cached results when rules change
+
+# Child processes get a minimal environment: never Hermes's provider keys or other secrets.
+SAFE_ENV_KEYS = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TERM",
+                 "SOLC_VERSION", "VIRTUAL_ENV", "SUI_CONFIG_DIR")
+
+
+def safe_env(extra_bin=None):
+    env = {k: os.environ[k] for k in SAFE_ENV_KEYS if k in os.environ}
+    if extra_bin:
+        env["PATH"] = extra_bin + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def _remaining(deadline):
+    return TIMEOUT if deadline is None else deadline - time.monotonic()
+
+
+def _out_of_time(target, tool):
+    return [_finding(target, None, "high", "scanner-timeout",
+                     "Talos ran out of time before scanning this file, so it is UNCHECKED. "
+                     "Run /talos (no time limit), then retry.", tool)]
+
+
+def _digest(*paths):
+    h = hashlib.sha256(SCANNER_VERSION.encode())
+    for p in sorted(paths):
+        h.update(p.encode())
+        try:
+            with open(p, "rb") as fh:
+                h.update(fh.read())
+        except OSError:
+            h.update(b"<missing>")
+    return h.hexdigest()
+
+
+UNCACHEABLE = {"scanner-missing", "scanner-error", "scanner-timeout"}
+
+
+def _cached(key_path, files, scan):
+    """Reuse findings when the scanned files are byte-identical to the last scan."""
+    digest = _digest(*files)
+    hit = store.cache_get(key_path, digest)
+    if hit is not None:
+        return hit
+    findings = scan()
+    if not any(f.get("rule") in UNCACHEABLE for f in findings):
+        store.cache_put(key_path, digest, findings)
+    return findings
 
 
 def _finding(file, line, severity, rule, message, tool):
@@ -25,42 +80,30 @@ def _line_of(text, index):
 
 
 # ---------------------------------------------------------------- dispatch
-def scan_path(path):
+def scan_path(path, deadline=None):
     path = os.path.abspath(os.path.expanduser(path))
     if os.path.isfile(path):
-        return scan_file(path)
+        return scan_file(path, deadline)
     findings = []
-    sol_done = False
-    framework = any(_find_up(path, m) or os.path.exists(os.path.join(path, m))
-                    for m in ("foundry.toml", "hardhat.config.js", "hardhat.config.ts"))
     for root, dirs, files in os.walk(path):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for name in files:
-            full = os.path.join(root, name)
-            if name.endswith(".sol"):
-                if framework:
-                    if not sol_done:
-                        findings += scan_solidity(path)  # Foundry/Hardhat: Slither scans the project once
-                        sol_done = True
-                else:
-                    findings += scan_solidity(full)  # loose files: Slither needs one file at a time
-            elif name.endswith(".rs"):
-                findings += scan_anchor_file(full)
-            elif name.endswith(".move"):
-                findings += scan_move_rules(full)
+            if name.endswith((".sol", ".rs", ".move")):
+                findings += scan_file(os.path.join(root, name), deadline)
     move_pkg = _find_up(path, "Move.toml") or (path if os.path.exists(os.path.join(path, "Move.toml")) else None)
     if move_pkg:
-        findings += scan_move_lint(move_pkg)
+        findings += scan_move_lint(move_pkg, deadline)
     return findings
 
 
-def scan_file(path):
+def scan_file(path, deadline=None):
+    path = os.path.abspath(path)
     if path.endswith(".sol"):
-        return scan_solidity(path)
+        return _cached(path, [path], lambda: scan_solidity(path, deadline))
     if path.endswith(".rs"):
-        return scan_anchor_file(path)
+        return _cached(path, [path], lambda: scan_anchor_file(path))
     if path.endswith(".move"):
-        return scan_move_rules(path)
+        return _cached(path, [path], lambda: scan_move_rules(path))
     return []
 
 
@@ -82,7 +125,6 @@ SLITHER_SEVERITY = {"High": "high", "Medium": "medium", "Low": "low",
 
 def _slither_bin():
     """Find slither on PATH, or next to the Python running Hermes (its venv bin)."""
-    import os, sys
     found = shutil.which("slither")
     if found:
         return found
@@ -90,33 +132,67 @@ def _slither_bin():
     return cand if os.path.isfile(cand) else None
 
 
-def _tool_env(binpath):
-    import os
-    env = dict(os.environ)
-    env["PATH"] = os.path.dirname(binpath) + os.pathsep + env.get("PATH", "")
-    return env
+def _remaps(root):
+    """Import remappings read from static files only. Never runs the project's tooling."""
+    maps = {}
+    rt = os.path.join(root, "remappings.txt")
+    if os.path.isfile(rt):
+        for line in open(rt, encoding="utf-8", errors="ignore"):
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.split(":", 1)[-1]
+            maps[k] = v if os.path.isabs(v) else os.path.join(root, v)
+    nm = os.path.join(root, "node_modules")
+    if os.path.isdir(nm):
+        for d in os.listdir(nm):
+            if d.startswith("@") and os.path.isdir(os.path.join(nm, d)):
+                maps.setdefault(d + "/", os.path.join(nm, d) + "/")
+    lib = os.path.join(root, "lib")
+    if os.path.isdir(lib) and not os.path.isfile(rt):
+        for d in os.listdir(lib):
+            src = os.path.join(lib, d, "src")
+            if os.path.isdir(src):
+                maps.setdefault(d + "/", src + "/")
+    # slither splits remaps on spaces; skip any path that contains one
+    return [f"{k}={v}" for k, v in maps.items() if " " not in k + v]
 
 
-def scan_solidity(target):
+def scan_solidity(target, deadline=None):
+    """Slither on ONE file, compiled with plain solc. Never invokes Hardhat/Foundry, never loads the
+    repo's slither config, and runs from an empty temp dir with a minimal environment, so scanning
+    a cloned repo can't execute that repo's code."""
     slither = _slither_bin()
     if not slither:
         return [_finding(target, None, "high", "scanner-missing",
                          "Slither is not installed, so Solidity code is unchecked. Run: pip install slither-analyzer",
                          "talos")]
-    project = _find_up(target, "foundry.toml") or _find_up(target, "hardhat.config.js") \
-        or _find_up(target, "hardhat.config.ts") or target
+    budget = _remaining(deadline)
+    if budget < 2:
+        return _out_of_time(target, "slither")
+    root = (_find_up(target, "foundry.toml") or _find_up(target, "hardhat.config.js")
+            or _find_up(target, "hardhat.config.ts") or os.path.dirname(target))
+    cmd = [slither, target, "--compile-force-framework", "solc", "--json", "-"]
+    maps = _remaps(root)
+    if maps:
+        cmd += ["--solc-remaps", " ".join(maps)]
     try:
-        proc = subprocess.run([slither, project, "--json", "-"], env=_tool_env(slither), capture_output=True,
-                              text=True, timeout=TIMEOUT, cwd=project if os.path.isdir(project) else None)
+        with tempfile.TemporaryDirectory(prefix="talos-") as work:
+            with open(os.path.join(work, "slither.config.json"), "w") as fh:
+                fh.write("{}")                    # shadows any config the repo ships
+            proc = subprocess.run(cmd, env=safe_env(os.path.dirname(slither)), capture_output=True,
+                                  text=True, timeout=min(TIMEOUT, budget), cwd=work)
         data = json.loads(proc.stdout or "{}")
         if not data.get("success") or "results" not in data:
             err = (data.get("error") or proc.stderr or "no output").strip()
             return [_finding(target, None, "high", "scanner-error",
                              "Slither could not analyze this code, so it is UNCHECKED: " + err[-300:], "slither")]
     except subprocess.TimeoutExpired:
-        return [_finding(target, None, "high", "scanner-timeout", "Slither timed out", "slither")]
+        return _out_of_time(target, "slither")
     except Exception as exc:
         return [_finding(target, None, "high", "scanner-error", f"Slither failed: {exc}", "slither")]
+    project = os.path.dirname(target)
     out = []
     for det in (data.get("results") or {}).get("detectors", []):
         line, file = None, target
@@ -217,12 +293,25 @@ def scan_move_rules(path):
 LINT_LOC = re.compile(r"┌─\s*(?P<file>[^:\s]+\.move):(?P<line>\d+)")
 
 
-def scan_move_lint(package_dir):
+def scan_move_lint(package_dir, deadline=None):
     if not shutil.which("sui"):
         return []
+    files = [os.path.join(package_dir, "Move.toml")]
+    for root, dirs, names in os.walk(package_dir):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        files += [os.path.join(root, n) for n in names if n.endswith(".move")]
+    return _cached(package_dir + os.sep + "<sui-lint>", files, lambda: _move_lint(package_dir, deadline))
+
+
+def _move_lint(package_dir, deadline):
+    budget = _remaining(deadline)
+    if budget < 2:
+        return _out_of_time(package_dir, "sui-lint")
     try:
         proc = subprocess.run(["sui", "move", "build", "--lint"], capture_output=True, text=True,
-                              timeout=TIMEOUT, cwd=package_dir)
+                              timeout=min(TIMEOUT, budget), cwd=package_dir, env=safe_env())
+    except subprocess.TimeoutExpired:
+        return _out_of_time(package_dir, "sui-lint")
     except Exception as exc:
         return [_finding(package_dir, None, "medium", "scanner-error", f"sui move lint failed: {exc}", "sui-lint")]
     out, current = [], None

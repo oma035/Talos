@@ -3,8 +3,11 @@ import os
 import re
 import shutil
 import subprocess
+import time
 
 from . import scanner, store
+
+GATE_BUDGET = 20.0   # seconds; Hermes's pre_tool_call hook limit is 30 s and fails closed
 
 TEST_WORDS = ("localhost", "127.0.0.1", "0.0.0.0", "localnet", "anvil", "devnet", "testnet",
               "sepolia", "holesky", "hoodi", "goerli", "amoy", "mumbai", "fuji")
@@ -119,7 +122,8 @@ def _classify(value):
 
 def _run(cmd, cwd=None):
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=cwd).stdout
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=5, cwd=cwd,
+                              env=scanner.safe_env()).stdout
     except Exception:
         return ""
 
@@ -169,18 +173,22 @@ def _rule_key(project, findings):
 
 def decide(deploy, cwd):
     project = find_project(cwd)
-    findings = scanner.scan_path(project)          # always rescan at the gate
-    store.set_findings(project, findings)
-    network, label = resolve_network(deploy, project)
-    worst = store.worst_severity(findings)
-    report = store.format_findings(findings, header="Open findings")
+    network, label = resolve_network(deploy, project)     # cheap, and decides how much work to do
 
-    if network == "test":
+    if network == "test":                                  # never slow down test deploys
+        findings = store.all_findings(under=project)
         if findings:
+            report = store.format_findings(findings, header="Open findings")
             PENDING_WARNINGS[deploy["command"]] = (
                 f"⚠ [Talos] Deployed to {label} with {len(findings)} open finding(s). "
                 f"These would BLOCK a mainnet deploy.\n{report}")
         return None
+
+    # Mainnet: rescan, but unchanged files come from the cache, inside a hard time budget.
+    findings = scanner.scan_path(project, deadline=time.monotonic() + GATE_BUDGET)
+    store.set_findings(project, findings)
+    worst = store.worst_severity(findings)
+    report = store.format_findings(findings, header="Open findings")
 
     if worst in ("critical", "high"):
         return {"action": "block", "message":

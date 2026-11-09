@@ -1,12 +1,14 @@
 """Talos: automatic, unskippable smart-contract security checks for Hermes Agent."""
 import json
 import os
+import time
 
 from .talos import gate, scanner, store
 
 CONTRACT_EXTS = (".sol", ".rs", ".move")
 WRITE_TOOLS = {"write_file", "patch", "edit_file", "write", "str_replace_editor"}
 TERMINAL_TOOLS = {"terminal", "shell", "bash"}
+WRITE_BUDGET = 25.0   # stay inside Hermes's 30 s hook limit; past it, report UNCHECKED
 
 TALOS_SCAN_SCHEMA = {
     "name": "talos_scan",
@@ -47,7 +49,7 @@ def _command_from_args(args):
     if isinstance(args, dict):
         for key in ("command", "cmd", "script"):
             if isinstance(args.get(key), str) and args[key]:
-                return os.path.join(_session_cwd(), os.path.expanduser(args[key]))
+                return args[key]
     return ""
 
 
@@ -77,7 +79,7 @@ def on_tool_result(**kwargs):
         path = os.path.join(_cwd_from_args(args), os.path.expanduser(path))
         if not os.path.exists(path):
             return f"{result}\n\n[Talos] Could not find {path} to scan, so this contract is UNCHECKED."
-        findings = scanner.scan_path(path)
+        findings = scanner.scan_path(path, deadline=time.monotonic() + WRITE_BUDGET)
         store.set_findings(path, findings)
         note = store.format_findings(findings, header=f"[Talos] Security scan of {os.path.basename(path)}")
         if findings:

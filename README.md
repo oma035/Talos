@@ -18,8 +18,8 @@ Detected deploys: `anchor deploy|upgrade`, `solana program deploy|upgrade`, `sui
 ## Install
 
 ```bash
-hermes plugins install <repo-url>
-hermes plugins enable talos      # grant tools.override when asked (see Permissions)
+hermes plugins install https://github.com/oma035/Talos
+hermes plugins enable talos
 ```
 
 Optional analyzers (Talos tells you if one is missing; it never silently skips):
@@ -31,12 +31,14 @@ Requires Hermes >= 0.18.1.
 
 ## Permissions (disclosure)
 
-- **`tools.override`.** Hermes requires this capability for any plugin whose `pre_tool_call` hook can block or escalate tool calls. Talos **does not replace any built-in tool.** It only inspects `terminal`/`shell` commands and blocks or escalates deploy commands. Every other tool call passes through untouched.
+- **No special capabilities requested.** Talos's `pre_tool_call` hook only inspects `terminal`/`shell` commands and blocks or escalates deploy commands; it replaces no built-in tool, and every other tool call passes through untouched.
+- **Never runs repository code.** Slither analyses each `.sol` file with plain `solc` (`--compile-force-framework solc`), so Hardhat/Foundry configs, scripts and builds in the project are never executed; import remappings are read from static files (`remappings.txt`, `node_modules/@*`, `lib/*/src`). Slither runs from an empty temp directory, so a repo's `slither.config.json` is never loaded.
+- **Minimal environment for every child process.** Slither, `sui`, `solana` and `cast` get only PATH, HOME, user/locale/temp vars and solc-select/Sui config vars. Hermes's provider API keys and other secrets are never passed on.
 - Talos runs in-process as regular Python, like every Hermes plugin.
 
 ## Data and network (disclosure)
 
-- **Stored:** findings JSON in Hermes's plugin data directory (`plugin_data_dir("talos")`, falling back to `$HERMES_HOME/plugin-data/talos/`). Nothing is written inside the plugin folder.
+- **Stored:** findings and a scan cache (file hash → findings) as JSON in Hermes's plugin data directory (`plugin_data_dir("talos")`). If that helper is unavailable, state is kept in memory only. Nothing is written inside the plugin folder.
 - **Sent anywhere:** nothing. Talos has no telemetry and calls no APIs of its own.
 - **Local commands it runs:** `slither`, `sui move build --lint`, `solana config get`, `sui client active-env`, and `cast chain-id` to identify the network. `cast chain-id` contacts the RPC URL **you** configured for the deploy.
 - **Credentials:** none read or stored.
@@ -54,6 +56,8 @@ Requires Hermes >= 0.18.1.
 - Deploys through tools other than the terminal (e.g. a custom MCP deploy tool), or heavily obfuscated commands, are not detected.
 - Some rules flag patterns rather than bugs (e.g. `init_if_needed`), so a correct fix may still show a medium finding needing approval.
 - A network given only as an environment variable (`$RPC_URL`) is treated as mainnet.
+- Talos never builds a project with its own tooling, so a `.sol` file whose imports can't be resolved from static remappings is reported **UNCHECKED** (which blocks mainnet) rather than compiled with Hardhat/Foundry.
+- The mainnet gate re-scans within a 20-second budget (unchanged files come from a hash cache). If a scan can't finish in time, the deploy is blocked as UNCHECKED; run `/talos` once (no time limit), then retry.
 
 ## Development
 

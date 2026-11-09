@@ -7,35 +7,60 @@ SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 _LOCK = threading.Lock()
 
 
+_MEM = {}          # used only if Hermes gives no plugin data dir: findings live for this process
+
+
 def _data_dir():
-    """Plugin runtime data lives outside the plugin folder (catalog rule)."""
+    """Plugin runtime data lives in Hermes's plugin data dir, outside the plugin folder (catalog rule).
+    No hardcoded home-directory fallback: without the host helper, Talos keeps state in memory."""
     try:
-        from plugins.plugin_storage import plugin_data_dir  # Hermes helper, if available
+        from plugins.plugin_storage import plugin_data_dir  # Hermes helper
         path = str(plugin_data_dir("talos"))
+        os.makedirs(path, exist_ok=True)
+        return path
     except Exception:
-        home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-        path = os.path.join(home, "plugin-data", "talos")
-    os.makedirs(path, exist_ok=True)
-    return path
+        return None
 
 
-def _db_path():
-    return os.path.join(_data_dir(), "findings.json")
+def _file(name):
+    d = _data_dir()
+    return os.path.join(d, name) if d else None
 
 
-def _load():
+def _load(name="findings.json"):
+    path = _file(name)
+    if path is None:
+        return dict(_MEM.get(name, {}))
     try:
-        with open(_db_path(), "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             return json.load(fh)
     except Exception:
         return {}
 
 
-def _save(data):
-    tmp = _db_path() + ".tmp"
+def _save(data, name="findings.json"):
+    path = _file(name)
+    if path is None:
+        _MEM[name] = dict(data)
+        return
+    tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
-    os.replace(tmp, _db_path())
+    os.replace(tmp, path)
+
+
+def cache_get(path, digest):
+    entry = _load("scan-cache.json").get(path)
+    if entry and entry.get("digest") == digest:
+        return entry.get("findings", [])
+    return None
+
+
+def cache_put(path, digest, findings):
+    with _LOCK:
+        data = _load("scan-cache.json")
+        data[path] = {"digest": digest, "findings": findings}
+        _save(data, "scan-cache.json")
 
 
 def _norm(path):
